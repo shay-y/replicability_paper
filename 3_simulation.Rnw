@@ -1,0 +1,573 @@
+% This script samples multi-lab data, in addition to a one single lab data. tests the method on the sinle lanb. 
+
+\documentclass{article}
+
+\addtolength{\oddsidemargin}{-.5in}
+\addtolength{\evensidemargin}{-.5in}
+\addtolength{\textwidth}{1in}
+
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp}
+\usepackage{underscore}
+\usepackage{longtable}
+
+\title{Simulation using Made Up data. Strain effects and Variances chosen freely.
+No Adjusting the effects. 1:7 }
+\author{Tal Lahav , Iman Jaljuli}
+\begin{document}
+
+\maketitle
+<<Setting Simulation parameters ,,echo=FALSE, results= 'hide', message = FALSE, warning=FALSE >>=
+# number of labs in the multi-lab data set
+Nlab=3
+# number of strains in the multi-lab and single lab data sets
+Nstrains=3
+
+# Number of repetitions for the sampling of a multi lab and the one singlr lab data sets, and the calculation of Type I error and power in each round. the same number of rounds for every setting of A and B values.
+Rounds=2
+
+Foo=read.csv('datasets/foo.csv')[,2]
+set.seed(Foo)
+a=c(.02,.05,0.1,.2)
+B=c(.1,.2,.5,1)
+
+alpha=0.05
+@
+
+<<Making up data ,echo=FALSE, results= 'hide', message = FALSE, warning=FALSE>>=
+
+library(xtable)
+library(nlme)
+library(multcomp)
+source("general_functions.R",echo = F)
+
+
+## A function that samples a NlabXNstrain data set. 24 animals from every strain in each lab. 
+# The function is built to recieve a matrix of strain effects in each endoint, a vectoe a GxL Sd, a a vector lab Sd and a vector of error sd
+build_MLD<-function(nLab=3,nSlab=1,StrainEffects, Gxl.sd ,Lab.sd ,Error.sd){ 
+  nStrain=dim(StrainEffects)[1]
+  sigma2=Error.sd^2
+  sigma2L=Lab.sd^2
+  sigma2GXL=Gxl.sd^2 
+  Vvars<<-rbind(sigma2,sigma2L,sigma2GXL)
+  labs=letters[1:(nLab)];strains=rownames(StrainEffects)#paste('Strain',1:nStrain,sep='')#,'SingleLab'
+  d1=cbind(expand.grid(strains,labs),matrix(nrow = nLab*nStrain,ncol = 0))[sort(rep(1:(nLab*nStrain),24)),]
+  Save.straineffects<<-StrainEffects # matrix(StrainEffects)
+  Noise=rnorm(n=(nLab*nStrain*24),sd=sqrt(sigma2))
+  nNoise=rnorm(n=(nSlab*nStrain*24),sd=sqrt(sigma2))
+  data=cbind(d1,matrix(NA,nrow = 24*nLab*nStrain,ncol=dim(StrainEffects)[2]))
+  names(data)=c('strain','lab',colnames(StrainEffects))
+  d1=cbind(expand.grid(strains,'SingleLab'),matrix(nrow = nSlab*nStrain,ncol = 0))[sort(rep(1:(nSlab*nStrain),24)),]
+  SingleLabData=cbind(d1,matrix(NA,nrow = 24*nSlab*nStrain,ncol=dim(StrainEffects)[2]))
+  names(SingleLabData)=c('strain','lab',colnames(StrainEffects))
+  for ( k in 3:(dim(data)[2])){
+    alpha=Save.straineffects[,k-2]
+    sigma2=Vvars[1,k-2]
+    sigma2L=Vvars[2,k-2]
+    GxL2=Vvars[3,k-2]
+    beta=rnorm(n =length(labs),sd=sqrt(sigma2L));names(beta)=labs
+    inter_star=rnorm(n =(nLab*nStrain),sd=sqrt(GxL2))
+    names(inter_star)=paste(rep(strains,length(labs)),labs[sort(rep(1:length(labs),length(strains)))],sep='*')
+    inter=inter_star
+    for( L in 1:nLab){
+      beta[L]=beta[L]+mean(inter_star[(nStrain*(L-1)+1):(nStrain*L)])  
+      inter[(nStrain*(L-1)+1):(nStrain*L)]=inter[(nStrain*(L-1)+1):(nStrain*L)]-
+        mean(inter_star[(nStrain*(L-1)+1):(nStrain*L)])  
+    }
+      data[,k]=alpha[data$strain]
+      data[,k]=data[,k]+Noise
+      data[,k]=data[,k]+beta[data$lab]
+      data[,k]=data[,k]+inter[paste(data$strain,data$lab,sep='*')]
+    beta=rnorm(n =nSlab,sd=sqrt(sigma2L));names(beta)='SingleLab'
+    inter_star=rnorm(n =(nSlab*nStrain),sd=sqrt(GxL2))
+    names(inter_star)=paste(rep(strains,nSlab),c('SingleLab')[sort(rep(1:nSlab,length(strains)))],sep='*')
+    inter=inter_star
+      SingleLabData[,k]=alpha[SingleLabData$strain]
+      SingleLabData[,k]=SingleLabData[,k]+nNoise
+      SingleLabData[,k]=SingleLabData[,k]+beta[SingleLabData$lab]
+      SingleLabData[,k]=SingleLabData[,k]+inter[paste(SingleLabData$strain,SingleLabData$lab,sep='*')]
+    }
+  SingleLabData$lab=as.factor(as.character(SingleLabData$lab))
+  BigSingle<<-SingleLabData
+  data$lab=as.factor(as.character(data$lab))
+  BigData<<-data
+}
+@
+
+<<analyze,echo=FALSE, comment=NA, results='asis',fig.width=8, fig.height=5>>=
+StE=matrix(0,nrow=Nstrains , ncol=21)
+colnames(StE)=paste('EP',1:dim(StE)[2],sep='')
+rownames(StE)=paste('strain',1:dim(StE)[1],sep='')
+
+AB=expand.grid(a,B)
+all.numbers.typeI=matrix(NA,,nrow = dim(AB)[1],ncol = 10)
+colnames(all.numbers.typeI)=c('A','B',
+                             'Multi-MixedD.-Standard','Multi-MixedD.-GxL',
+                             'Multi-ExactD.-Standard','Multi-ExactD.-GxL',
+                             'NewSingle-MixedD.-Standard','NewSingle-MixedD.-GxL',
+                             'NewSingle-ExactD.-Standard','NewSingle-ExactD.-GxL')
+all.numbers.typeI[,1:2]=as.matrix(AB)
+all.numbers.Var=all.numbers.Sd=all.numbers.typeI
+
+
+## The following lines are aimed to Only establish Empty Swithin.lab.tbl and Sumpairwise.multi tables.
+# The reasn it's done this way is completely technical: have them exactly set as the tables generated inside the loop. ehich makes it easier o cross the tabls togather. 
+# The numbers used here are exactky meaningkess and unused in any way. 
+rubbish=matrix(0,nrow=Nstrains , ncol=21)
+colnames(rubbish)=paste('EP',1:dim(rubbish)[2],sep='')
+rownames(rubbish)=paste('strain',1:dim(rubbish)[1],sep='')
+## number of endpoints=21
+build_MLD(nLab = Nlab,nSlab = 1,StrainEffects = rubbish ,
+          Gxl.sd = rep(1,21) ,Lab.sd = rep(1,21),Error.sd = rep(10,21))
+d1=BigData; SingleLabData=BigSingle
+k=3
+  y <- d1[,k]
+  anova.str <-bulid.anova.table(d1,y)
+variable.name <- colnames(d1)[k]
+variable <- aggregate.data(variable.name,d1)
+  pairwise.multi.comparisons.tbl <- pairwise.multi.comparisons.function(d1,y,variable) 
+## The following lines are for clculating the mean-endpoint numbers in all rounds. 
+  Empty1=within.lab.function(d1,y,anova.str)
+  Empty1[,4:11]=matrix(0,nrow=dim(Empty1)[1],ncol=length(4:11))
+
+Empty2<- pairwise.multi.comparisons.function(d1,y,variable)
+  Empty2[,3:12]=0
+ Empty2= list(E1=Empty2)[rep(1,84)]
+   names(Empty2)=paste('E',1:84,sep='')
+
+
+for (ab in 1:dim(AB)[1]){
+  
+cat(paste("\\part{A=",AB[ab,1]," ,B=",AB[ab,2],"}\n",sep=""))
+StE=matrix(0,nrow=Nstrains , ncol=21)
+colnames(StE)=paste('EP',1:dim(StE)[2],sep='')
+rownames(StE)=paste('strain',1:dim(StE)[1],sep='')
+SetGxL=AB[ab,1]*c(1,2,3,4,6,8,10)
+SetGxL=c(SetGxL,SetGxL,SetGxL)
+StE[3,8:14]=2*AB[ab,2]*(1:7)
+StE[3,15:21]=2*AB[ab,2]*(1:7)
+StE[1,15:21]=-AB[ab,2]*(1:7)
+
+cat(paste("\\subsection*{",'Simulation Parameters',"}\n",sep=""))
+print(xtable(cbind(t(StE),sd.gxl=SetGxL)),tabular.environment="longtable",floating=FALSE)
+############# tables of counts for rejections X exact real
+mixed.calls <- matrix(0,ncol=3,nrow=3)
+colnames(mixed.calls) <- c("No Difference between genotypes","Difference between genotypes","Total")
+rownames(mixed.calls) <- c("Declared significant","Declared non-significant","Total")
+NewSingle.Ecalls=NewSingle.Mcalls=NewSingleG.Ecalls=NewSingleG.Mcalls=mixed.calls
+########################
+gxl.saved=rep(NA,(dim(StE)[2]))
+names(gxl.saved)=colnames(StE)
+Swithin.lab.tbl=Empty1
+Sumpairwise.multi=Empty2
+Rounds.nums=array(dim = c(8,2,Rounds)) # 1= Exact 2=Mixed calls
+rownames(Rounds.nums)=c('StandardI-single','StandardII-single','GxLI-single','GxLII-single',
+                        'StandardI-multi','StandardII-multi','GxLI-multi','GxLII-multi')
+
+for (Round in 1:Rounds){
+build_MLD(nLab = Nlab,nSlab = 1,StrainEffects = StE,Gxl.sd = SetGxL ,Lab.sd = rep(1,length(SetGxL)),Error.sd = rep(1,length(SetGxL)))
+d1=BigData
+SingleLabData=BigSingle
+
+save.all=matrix(NA,nrow=0,ncol=8) #This matrix will be used to save the results of all of the Endpoints along.
+colnames(save.all) <- c('EP',"lab",'strain1','strain2',"p.FLM.multi","p.RLM.multi","p.FLM.single","p.RLM.single")
+
+
+for (k in 3:dim(d1)[2]){ #
+  variable.name <- colnames(d1)[k] # Endpoint name.
+  y <- d1[,k]
+  
+  ## Begining the analysis ##
+  ## Multi-lab Fixed model using (currently ) outside function##
+  anova.str <- tryCatch( bulid.anova.table(d1,y),error=function(e) e)
+  if(inherits(anova.str, "error")) build_MLD(nLab = Nlab,nSlab = 1,StrainEffects = StE,Gxl.sd = SetGxL ,Lab.sd = rep(1,length(SetGxL)),Error.sd = rep(1,length(SetGxL)))
+  if(inherits(anova.str, "error")) d1[,k]=y=BigData[,k]
+  if(inherits(anova.str, "error")) anova.str <-bulid.anova.table(d1,y)
+
+    anova.str <- tryCatch( bulid.anova.table(d1,y),error=function(e) e)
+  if(inherits(anova.str, "error")) build_MLD(nLab = Nlab,nSlab = 1,StrainEffects = StE,Gxl.sd = SetGxL ,Lab.sd = rep(1,length(SetGxL)),Error.sd = rep(1,length(SetGxL)))
+  if(inherits(anova.str, "error")) d1[,k]=y=BigData[,k]
+  if(inherits(anova.str, "error")) anova.str <-bulid.anova.table(d1,y)
+
+    anova.str <- tryCatch( bulid.anova.table(d1,y),error=function(e) e)
+  if(inherits(anova.str, "error")) build_MLD(nLab = Nlab,nSlab = 1,StrainEffects = StE,Gxl.sd = SetGxL ,Lab.sd = rep(1,length(SetGxL)),Error.sd = rep(1,length(SetGxL)))
+  if(inherits(anova.str, "error")) d1[,k]=y=BigData[,k]
+  if(inherits(anova.str, "error")) anova.str <-bulid.anova.table(d1,y)
+
+  variable <- aggregate.data(variable.name,d1) # Create the data summery table (The first table) 
+
+   # This is an object of type list, where the first component is the Fixed+Mixed model anova table (the second table found in the analysis) , the second component is the estimate of the interaction. 
+  gxl.saved[k-2]=anova.str[[2]]
+  ## Multi-lab Random Lab Model##
+  pairwise.multi.comparisons.tbl <- pairwise.multi.comparisons.function(d1,y,variable) # Table of genotype pairwise common t-tests (regadlees of the lab), For both Fixed effect model and Random lab model (The Third table found in the analysis.)
+  ## Single-lab Fixed and Mixed analysis
+  ## Imitating the situation of a single researcher in a single lab situation: 
+  within.lab.tbl <- tryCatch( within.lab.function(d1,y,anova.str),error=function(e) e) 
+  if(inherits(within.lab.tbl, "error")) next
+   tow=Sumpairwise.multi[[k-2]]
+   tow[,3:12]=tow[,3:12]+pairwise.multi.comparisons.tbl[,3:12]
+   Sumpairwise.multi[[k-2]]=tow
+  
+  com.t=combn(x = unique((d1)$strain),m = 2)
+
+comb.tbl <- merge(pairwise.multi.comparisons.tbl[,c("strain1","strain2","p.FLM","p.RLM")],within.lab.tbl[,c("strain1","strain2",'diff',"lab","p.FLM","p.RLM")],by=intersect(c("strain1","strain2"),c("strain1","strain2")))
+
+  colnames(comb.tbl) <- c("strain1","strain2","p.FLM.multi","p.RLM.multi",'diff',"lab","p.FLM.single","p.RLM.single")
+  
+  comb.tbl=comb.tbl[,c("lab","strain1","strain2",'diff',"p.FLM.multi","p.RLM.multi","p.FLM.single","p.RLM.single")] 
+  comb.tbl=data.frame(EP=rep(variable.name,dim(comb.tbl)[1]),comb.tbl)
+
+save.all=rbind(save.all,comb.tbl) # Save the most recent results to the big table.
+
+}
+
+
+s1=pairwise.multi.comparisons.tbl[,'strain1']
+s2=pairwise.multi.comparisons.tbl[,'strain2']
+SavedStrainEffects=StE
+equal.effects=data.frame(s1,s2,unname((SavedStrainEffects[s1,]-SavedStrainEffects[s2,]))) 
+paringNames.del=cbind(as.character(equal.effects$s1),as.character(equal.effects$s2))
+paringNames=paste(equal.effects$s1,equal.effects$s2,sep='-')
+rownames(equal.effects)=paringNames
+equal.effects=((equal.effects[,-c(1:2)])==0) 
+save.all.equal.effects=equal.effects
+save.all.equal.effects.Exact=save.all.equal.effects # to save only
+
+
+V.fixed=v.fixed=S.fixed=s.fixed=U.fixed=u.fixed=T.fixed=t.fixed=R.mixed=r.mixed=nonR.mixed=non.mixed=V.mixed=v.mixed=S.mixed=s.mixed=U.mixed=u.mixed=T.mixed=t.mixed=m=M=M0=m0=M1=m1=R.fixed=r.fixed=nonR.fixed=nonr.fixed=M1.fixed=m1.fixed=R.mixed=r.mixed=nonR.mixed=nonr.mixed=M1.mixed=m1.mixed=c()
+
+# When defining "Truth" by the values of parameters not Mixed model terms:
+V.fixed.exact=S.fixed.exact=U.fixed.exact=T.fixed.exact=
+  V.mixed.exact=v.mixed.exact=S.mixed.exact=U.mixed.exact=T.mixed.exact=c()
+
+
+lab <- unique(d1[,'lab'])
+l=1
+# Next we count the components of each of the 9 cells of both results to appear in the supplementary tables, 
+# For every Pair of genotypes in lab solely, over all of the endpoints they've been tested in.
+for (la in 1:length(lab)){
+  co.t=combn(x =unique(c((save.all[save.all$lab==lab[la],])$strain1,(save.all[save.all$lab==lab[la],])$strain2)),m = 2)
+  for (k in 1:dim(co.t)[2]){
+    ka=(save.all$lab==lab[la])&(save.all$strain1%in%co.t[,k])&(save.all$strain2%in%co.t[,k])
+    kb=((paringNames.del[,1]==co.t[1,k])&(paringNames.del[,2]==co.t[2,k]))|
+      ((paringNames.del[,1]==co.t[2,k])&(paringNames.del[,2]==co.t[1,k]))
+  m[l]=M[l]=sum(ka) #total number of genotypes
+M0[l]=m0[l]=sum(save.all[ka,"p.RLM.multi"]>alpha)# Number of true null hypothesis
+M1[l]=m1[l]=M[l]-M0[l] # Number of alternative null hypothesis
+M1.fixed[l]=m1.fixed[l]=sum(save.all[ka,"p.FLM.multi"]<=alpha)
+R.fixed[l]=sum(save.all[ka,"p.FLM.single"]<=alpha)
+nonR.fixed[l]=M[l]-R.fixed[l]
+V.fixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.FLM.single"]<=alpha))
+S.fixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.FLM.single"]<=alpha))
+U.fixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.FLM.single"]>alpha))
+T.fixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.FLM.single"]>alpha))
+
+R.mixed[l]=sum(save.all[ka,"p.RLM.single"]<=alpha)
+nonR.mixed[l]=M[l]-R.mixed[l]
+V.mixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.RLM.single"]<=alpha))
+S.mixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.RLM.single"]<=alpha))
+U.mixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.RLM.single"]>alpha))
+T.mixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.RLM.single"]>alpha)) 
+V.fixed.exact[l]=sum((save.all.equal.effects[kb,])&(save.all[ka,"p.FLM.single"]<=alpha))
+S.fixed.exact[l]=sum((!save.all.equal.effects[kb,])&(save.all[ka,"p.FLM.single"]<=alpha))
+U.fixed.exact[l]=sum((save.all.equal.effects[kb,])&(save.all[ka,"p.FLM.single"]>alpha))
+T.fixed.exact[l]=sum((!save.all.equal.effects[kb,])&(save.all[ka,"p.FLM.single"]>alpha))
+V.mixed.exact[l]=sum((save.all.equal.effects[kb,])&(save.all[ka,"p.RLM.single"]<=alpha))
+S.mixed.exact[l]=sum((!save.all.equal.effects[kb,])&(save.all[ka,"p.RLM.single"]<=alpha))
+U.mixed.exact[l]=sum((save.all.equal.effects[kb,])&(save.all[ka,"p.RLM.single"]>alpha))
+T.mixed.exact[l]=sum((!save.all.equal.effects[kb,])&(save.all[ka,"p.RLM.single"]>alpha)) 
+
+l=l+1
+  }
+} 
+
+mixed.calls["Declared significant","No Difference between genotypes"] = 
+  mixed.calls["Declared significant","No Difference between genotypes"] + sum(V.mixed.exact)
+mixed.calls["Declared non-significant","No Difference between genotypes"] =
+  mixed.calls["Declared non-significant","No Difference between genotypes"]+sum(U.mixed.exact)
+mixed.calls["Declared significant","Difference between genotypes"] =
+  mixed.calls["Declared significant","Difference between genotypes"]+sum(S.mixed.exact)
+mixed.calls["Declared non-significant","Difference between genotypes"]=
+  mixed.calls["Declared non-significant","Difference between genotypes"]+sum(T.mixed.exact)
+mixed.calls["Declared significant","Total"]= 
+  mixed.calls["Declared significant","Total"]+sum(S.mixed.exact)+sum(V.mixed.exact)
+mixed.calls["Declared non-significant","Total"]=
+  mixed.calls["Declared non-significant","Total"]+sum(c(T.mixed.exact,U.mixed.exact))
+mixed.calls["Total","No Difference between genotypes"]=
+  mixed.calls["Total","No Difference between genotypes"]+sum(c(U.mixed.exact,V.mixed.exact))
+mixed.calls["Total","Difference between genotypes"] =
+  mixed.calls["Total","Difference between genotypes"]+ sum(c(T.mixed.exact,S.mixed.exact))
+mixed.calls["Total","Total"] <- mixed.calls["Total","Total"]+mixed.calls["Declared significant","Total"]+mixed.calls["Declared non-significant","Total"]
+
+
+##########################################
+## Testing on the new independendant single lab
+
+new.d=SingleLabData
+new.labs=unique(new.d[,"lab"])
+
+for (SingleLab in new.labs){
+  d1.new=new.d[new.d$lab==SingleLab,]
+  d1.new[,"strain"] <- as.factor(d1.new[,"strain"])
+  d1.new[,"lab"] <- as.factor(d1.new[,"lab"])
+  # The following lines are only to get the namings of gxl.tests vector
+  diffs=((TukeyHSD(aov(d1.new[,3]~d1.new[,1])))[[1]])[,1]
+  pairs=(as.data.frame.list(strsplit(x=names(diffs),split = '-')))
+  names_gxl.tests=paste(as.character(unlist(c(pairs[1,]))),as.character(unlist(c(pairs[2,]))),sep='-') # Later, the vector gxl.tests will be named as such. 
+
+MixedCalls=unique(save.all[,c('EP','strain1','strain2',"p.RLM.multi")])
+MixedCalls[,"p.RLM.multi"]=(MixedCalls[,"p.RLM.multi"]>=0.05)
+  
+  for (k in 3:dim(d1.new)[2]){#102
+    MixedCalls_K=MixedCalls[(MixedCalls[,1]==colnames(d1.new)[k]),-1]
+    rownames(MixedCalls_K)=paste(MixedCalls_K[,1],MixedCalls_K[,2],sep='-')
+    gxl=gxl.saved[k-2]
+    variable.name <- colnames(d1.new)[k] # Endpoint name.
+    variable <- aggregate.data(variable.name,d1.new) # Create the data summery table (The first table) 
+    y <- d1.new[,k]
+    diffs=((TukeyHSD(aov(d1.new[,k]~d1.new[,1])))[[1]])[,1]
+    pairs=(as.data.frame.list(strsplit(x=names(diffs),split = '-')))
+    vars=as.matrix(tapply(X = d1.new[,k],INDEX = d1.new[,1],FUN = var))
+    Ns=as.matrix(table(d1.new[,1]))
+
+    # For the GxL Adjusted :
+    Spoolds2=( (Ns[as.character(unlist(c(pairs[2,]))),]-1)*vars[as.character(unlist(c(pairs[2,]))),] + (Ns[as.character(unlist(c(pairs[1,]))),]-1)*vars[as.character(unlist(c(pairs[1,]))),] ) / (Ns[as.character(unlist(c(pairs[1,]))),]+Ns[as.character(unlist(c(pairs[2,]))),]-2)
+names(Spoolds2)=paste(as.character(unlist(c(pairs[1,]))),as.character(unlist(c(pairs[2,]))),sep='-')
+  
+
+nn=1/Ns[as.character(unlist(c(pairs[1,]))),]+1/Ns[as.character(unlist(c(pairs[2,]))),]
+
+gxl.tests=diffs[names(Spoolds2)]/sqrt(Spoolds2*nn+2*gxl)
+
+l=(1/(Ns[as.character(unlist(c(pairs[1,]))),]+Ns[as.character(unlist(c(pairs[2,]))),]-2))*
+  (((1/Ns[as.character(unlist(c(pairs[1,]))),]+1/Ns[as.character(unlist(c(pairs[2,]))),])*Spoolds2)^2)+
+  4*(gxl^2)/(2*2)
+u=((1/Ns[as.character(unlist(c(pairs[1,]))),]+1/Ns[as.character(unlist(c(pairs[2,]))),])*Spoolds2+2*gxl)^2
+v=u/l
+compute.df.sater(s2int=gxl,df.int=(length(unique(BigData$strain))-1)*(length(unique(BigData$lab))-1)
+                   ,s2pooled=Spoolds2,n1=24,n2=24)
+
+Pvalues=pt(q = abs(gxl.tests),df = v,lower.tail = F)*2
+pairs.difs.sld=as.matrix(gxl.tests)
+pairs.difs.sld=cbind(pairs.difs.sld,v,Pvalues)
+colnames(pairs.difs.sld)=c('statistic','df','p.RLM')
+# For the unadjusted:
+v1= (Ns[as.character(unlist(c(pairs[1,]))),]+Ns[as.character(unlist(c(pairs[2,]))),]-2) # df of unadjusted statistic
+Unadjusted_Pvalues=pt(q = abs( diffs[names(Spoolds2)]/sqrt(Spoolds2*nn) ),df = v1,lower.tail = F)*2
+Unadjusted.sld=as.matrix(diffs[names(Spoolds2)]/sqrt(Spoolds2*nn))
+Unadjusted.sld=cbind(Unadjusted.sld,v1,Unadjusted_Pvalues)
+colnames(Unadjusted.sld)=c('statistic','df','p.RLM')
+
+#done 
+
+
+
+### tables to count rejections in Single labs
+# standard - exact defined
+Ve_s=sum((equal.effects[names(gxl.tests),k-2])*(Unadjusted_Pvalues[names(gxl.tests)]<0.05))
+Ue_s=sum((equal.effects[names(gxl.tests),k-2])*(Unadjusted_Pvalues[names(gxl.tests)]>=0.05))
+Se_s=sum((!equal.effects[names(gxl.tests),k-2])*(Unadjusted_Pvalues[names(gxl.tests)]<0.05))
+Te_s=sum((!equal.effects[names(gxl.tests),k-2])*(Unadjusted_Pvalues[names(gxl.tests)]>=0.05))
+
+
+NewSingle.Ecalls["Declared significant","No Difference between genotypes"] = 
+  NewSingle.Ecalls["Declared significant","No Difference between genotypes"] + Ve_s
+NewSingle.Ecalls["Declared non-significant","No Difference between genotypes"] =
+  NewSingle.Ecalls["Declared non-significant","No Difference between genotypes"]+Ue_s
+NewSingle.Ecalls["Declared significant","Difference between genotypes"] =
+  NewSingle.Ecalls["Declared significant","Difference between genotypes"]+Se_s
+NewSingle.Ecalls["Declared non-significant","Difference between genotypes"]=
+  NewSingle.Ecalls["Declared non-significant","Difference between genotypes"]+Te_s
+NewSingle.Ecalls["Declared significant","Total"]= 
+  NewSingle.Ecalls["Declared significant","Total"]+Se_s+Ve_s
+NewSingle.Ecalls["Declared non-significant","Total"]=
+  NewSingle.Ecalls["Declared non-significant","Total"]+Ue_s+Te_s
+NewSingle.Ecalls["Total","No Difference between genotypes"]=
+  NewSingle.Ecalls["Total","No Difference between genotypes"]+Ue_s+Ve_s
+NewSingle.Ecalls["Total","Difference between genotypes"] =
+  NewSingle.Ecalls["Total","Difference between genotypes"]+ Te_s+Se_s
+NewSingle.Ecalls["Total","Total"] <- NewSingle.Ecalls["Total","Total"]+Ue_s+Ve_s+Se_s+Te_s
+
+# standard - Mixed-Calls defined
+Vm_s=sum(((MixedCalls_K[names(gxl.tests),3]))*(Unadjusted_Pvalues[names(gxl.tests)]<0.05))
+Um_s=sum(((MixedCalls_K[names(gxl.tests),3]))*(Unadjusted_Pvalues[names(gxl.tests)]>=0.05))
+Sm_s=sum((!(MixedCalls_K[names(gxl.tests),3]))*(Unadjusted_Pvalues[names(gxl.tests)]<0.05))
+Tm_s=sum((!(MixedCalls_K[names(gxl.tests),3]))*(Unadjusted_Pvalues[names(gxl.tests)]>=0.05))
+
+
+NewSingle.Mcalls["Declared significant","No Difference between genotypes"] = 
+  NewSingle.Mcalls["Declared significant","No Difference between genotypes"] + Vm_s
+NewSingle.Mcalls["Declared non-significant","No Difference between genotypes"] =
+  NewSingle.Mcalls["Declared non-significant","No Difference between genotypes"]+Um_s
+NewSingle.Mcalls["Declared significant","Difference between genotypes"] =
+  NewSingle.Mcalls["Declared significant","Difference between genotypes"]+Sm_s
+NewSingle.Mcalls["Declared non-significant","Difference between genotypes"]=
+  NewSingle.Mcalls["Declared non-significant","Difference between genotypes"]+Tm_s
+NewSingle.Mcalls["Declared significant","Total"]= 
+  NewSingle.Mcalls["Declared significant","Total"]+Sm_s+Vm_s
+NewSingle.Mcalls["Declared non-significant","Total"]=
+  NewSingle.Mcalls["Declared non-significant","Total"]+Um_s+Tm_s
+NewSingle.Mcalls["Total","No Difference between genotypes"]=
+  NewSingle.Mcalls["Total","No Difference between genotypes"]+Um_s+Vm_s
+NewSingle.Mcalls["Total","Difference between genotypes"] =
+  NewSingle.Mcalls["Total","Difference between genotypes"]+ Tm_s+Sm_s
+NewSingle.Mcalls["Total","Total"] <- NewSingle.Mcalls["Total","Total"]+Um_s+Vm_s+Sm_s+Tm_s
+
+# GxL - exact defined
+Ve_g=sum((equal.effects[names(gxl.tests),k-2])*(Pvalues[names(gxl.tests)]<0.05))
+Ue_g=sum((equal.effects[names(gxl.tests),k-2])*(Pvalues[names(gxl.tests)]>=0.05))
+Se_g=sum((!equal.effects[names(gxl.tests),k-2])*(Pvalues[names(gxl.tests)]<0.05))
+Te_g=sum((!equal.effects[names(gxl.tests),k-2])*(Pvalues[names(gxl.tests)]>=0.05))
+
+
+NewSingleG.Ecalls["Declared significant","No Difference between genotypes"] = 
+  NewSingleG.Ecalls["Declared significant","No Difference between genotypes"] + Ve_g
+NewSingleG.Ecalls["Declared non-significant","No Difference between genotypes"] =
+  NewSingleG.Ecalls["Declared non-significant","No Difference between genotypes"]+Ue_g
+NewSingleG.Ecalls["Declared significant","Difference between genotypes"] =
+  NewSingleG.Ecalls["Declared significant","Difference between genotypes"]+Se_g
+NewSingleG.Ecalls["Declared non-significant","Difference between genotypes"]=
+  NewSingleG.Ecalls["Declared non-significant","Difference between genotypes"]+Te_g
+NewSingleG.Ecalls["Declared significant","Total"]= 
+  NewSingleG.Ecalls["Declared significant","Total"]+Se_g+Ve_g
+NewSingleG.Ecalls["Declared non-significant","Total"]=
+  NewSingleG.Ecalls["Declared non-significant","Total"]+Ue_g+Te_g
+NewSingleG.Ecalls["Total","No Difference between genotypes"]=
+  NewSingleG.Ecalls["Total","No Difference between genotypes"]+Ue_g+Ve_g
+NewSingleG.Ecalls["Total","Difference between genotypes"] =
+  NewSingleG.Ecalls["Total","Difference between genotypes"]+ Te_g+Se_g
+NewSingleG.Ecalls["Total","Total"] <- NewSingleG.Ecalls["Total","Total"]+Ue_g+Ve_g+Se_g+Te_g
+
+# GxL - Mixed-Calls defined
+Vm_g=sum(((MixedCalls_K[names(gxl.tests),3]))*(Pvalues[names(gxl.tests)]<0.05))
+Um_g=sum(((MixedCalls_K[names(gxl.tests),3]))*(Pvalues[names(gxl.tests)]>=0.05))
+Sm_g=sum((!(MixedCalls_K[names(gxl.tests),3]))*(Pvalues[names(gxl.tests)]<0.05))
+Tm_g=sum((!(MixedCalls_K[names(gxl.tests),3]))*(Pvalues[names(gxl.tests)]>=0.05))
+
+
+NewSingleG.Mcalls["Declared significant","No Difference between genotypes"] = 
+  NewSingleG.Mcalls["Declared significant","No Difference between genotypes"] + Vm_g
+NewSingleG.Mcalls["Declared non-significant","No Difference between genotypes"] =
+  NewSingleG.Mcalls["Declared non-significant","No Difference between genotypes"]+Um_g
+NewSingleG.Mcalls["Declared significant","Difference between genotypes"] =
+  NewSingleG.Mcalls["Declared significant","Difference between genotypes"]+Sm_g
+NewSingleG.Mcalls["Declared non-significant","Difference between genotypes"]=
+  NewSingleG.Mcalls["Declared non-significant","Difference between genotypes"]+Tm_g
+NewSingleG.Mcalls["Declared significant","Total"]= 
+  NewSingleG.Mcalls["Declared significant","Total"]+Sm_g+Vm_g
+NewSingleG.Mcalls["Declared non-significant","Total"]=
+  NewSingleG.Mcalls["Declared non-significant","Total"]+Um_g+Tm_g
+NewSingleG.Mcalls["Total","No Difference between genotypes"]=
+  NewSingleG.Mcalls["Total","No Difference between genotypes"]+Um_g+Vm_g
+NewSingleG.Mcalls["Total","Difference between genotypes"] =
+  NewSingleG.Mcalls["Total","Difference between genotypes"]+ Tm_g+Sm_g
+NewSingleG.Mcalls["Total","Total"] <- NewSingleG.Mcalls["Total","Total"]+Um_g+Vm_g+Sm_g+Tm_g
+  
+  
+  }
+Rounds.nums[1,1,Round]=NewSingle.Ecalls["Declared significant","No Difference between genotypes"]/NewSingle.Ecalls["Total","No Difference between genotypes"]
+
+Rounds.nums[2,1,Round]=NewSingle.Ecalls["Declared non-significant","Difference between genotypes"]/NewSingle.Ecalls["Total","Difference between genotypes"]
+Rounds.nums[3,1,Round]=NewSingleG.Ecalls["Declared significant","No Difference between genotypes"]/NewSingleG.Ecalls["Total","No Difference between genotypes"]
+Rounds.nums[4,1,Round]=NewSingleG.Ecalls["Declared non-significant","Difference between genotypes"]/NewSingleG.Ecalls["Total","Difference between genotypes"]
+
+
+Rounds.nums[1,2,Round]=NewSingle.Mcalls["Declared significant","No Difference between genotypes"]/NewSingle.Mcalls["Total","No Difference between genotypes"]
+Rounds.nums[2,2,Round]=NewSingle.Mcalls["Declared non-significant","Difference between genotypes"]/NewSingle.Mcalls["Total","Difference between genotypes"]
+Rounds.nums[3,2,Round]=NewSingleG.Mcalls["Declared significant","No Difference between genotypes"]/NewSingleG.Mcalls["Total","No Difference between genotypes"]
+Rounds.nums[4,2,Round]=NewSingleG.Mcalls["Declared non-significant","Difference between genotypes"]/NewSingleG.Mcalls["Total","Difference between genotypes"]
+
+Rounds.nums[5,1,Round]=sum(V.fixed.exact)/(sum(U.fixed.exact)+sum(V.fixed.exact))
+Rounds.nums[6,1,Round]=(1-sum(S.fixed.exact)/(sum(S.fixed.exact)+sum(T.fixed.exact)))
+Rounds.nums[7,1,Round]=sum(V.mixed.exact)/(sum(U.mixed.exact)+sum(V.mixed.exact))
+Rounds.nums[8,1,Round]=(1-sum(S.mixed.exact)/(sum(S.mixed.exact)+sum(T.mixed.exact)))
+Rounds.nums[5,2,Round]=sum(V.fixed)/(sum(U.fixed)+sum(V.fixed))
+Rounds.nums[6,2,Round]=1-sum(S.fixed)/(sum(S.fixed)+sum(T.fixed))
+Rounds.nums[7,2,Round]=sum(V.mixed)/(sum(U.mixed)+sum(V.mixed))
+Rounds.nums[8,2,Round]=1-sum(S.mixed)/(sum(S.mixed)+sum(T.mixed))
+### End of testing on the single lab. 
+}
+
+}
+
+Rounds.Sds.table=apply(X = Rounds.nums,MARGIN = c(1,2),FUN = sd)
+Rounds.Var.table=apply(X = Rounds.nums,MARGIN = c(1,2),FUN = var)
+
+cat('\\clearpage')
+cat(paste('\\subsection*{','Mean results  over All Single labs',"}\n",sep=""))
+MsingleLabResults=(apply(X = Rounds.nums,MARGIN = c(1,2),FUN = mean)[1:4,])
+colnames(MsingleLabResults)=c('Exact','Mixed-Model Calls')
+print(xtable(MsingleLabResults,digits = 5),tabular.environment="longtable",floating=FALSE)
+all.numbers.typeI[ab,c('NewSingle-MixedD.-Standard','NewSingle-MixedD.-GxL','NewSingle-ExactD.-Standard','NewSingle-ExactD.-GxL')]=
+  c(MsingleLabResults[1,2],MsingleLabResults[3,2],MsingleLabResults[1,1],MsingleLabResults[3,1])
+ 
+all.numbers.Var[ab,c('NewSingle-MixedD.-Standard','NewSingle-MixedD.-GxL','NewSingle-ExactD.-Standard','NewSingle-ExactD.-GxL')]=
+  c(Rounds.Var.table[1,2],Rounds.Var.table[3,2],Rounds.Var.table[1,1],Rounds.Var.table[3,1])
+all.numbers.Var[ab,c('Multi-MixedD.-Standard','Multi-MixedD.-GxL','Multi-ExactD.-Standard','Multi-ExactD.-GxL')]=
+  c(Rounds.Var.table[4,2],Rounds.Var.table[6,2],Rounds.Var.table[4,1],Rounds.Var.table[6,1])
+
+all.numbers.Sd[ab,c('NewSingle-MixedD.-Standard','NewSingle-MixedD.-GxL','NewSingle-ExactD.-Standard','NewSingle-ExactD.-GxL')]=
+  c(Rounds.Sds.table[1,2],Rounds.Sds.table[3,2],Rounds.Sds.table[1,1],Rounds.Sds.table[3,1])
+
+all.numbers.Sd[ab,c('Multi-MixedD.-Standard','Multi-MixedD.-GxL','Multi-ExactD.-Standard','Multi-ExactD.-GxL')]=
+  c(Rounds.Sds.table[4,2],Rounds.Sds.table[6,2],Rounds.Sds.table[4,1],Rounds.Sds.table[6,1])
+
+EM=apply(X = Rounds.nums,MARGIN = c(1,2),FUN = mean)[5:8,]
+Errors.means=matrix(NA,nrow=2,ncol=4)
+colnames(Errors.means)=c('Type I Error','Power',
+                         'Type I Error-Exact','Power-Exact') #'Type II Error Cond.')
+rownames(Errors.means)=c('standard','Gxl adjusted') #,'standard-BH','Gxl adjusted-BH')
+Errors.means['standard',]=c(EM[1,2],1-EM[2,2],EM[1,1],1-EM[2,1])
+Errors.means['Gxl adjusted',]=c(EM[3,2],1-EM[4,2],EM[3,1],1-EM[4,1])
+
+cat(paste('\\subsection*{','Mean results of the multi-lab data sets,  over All endpoints in all rounds',"}\n",sep=""))
+print(xtable(Errors.means),tabular.environment="longtable",floating=FALSE)
+all.numbers.typeI[ab,c('Multi-MixedD.-Standard','Multi-MixedD.-GxL','Multi-ExactD.-Standard','Multi-ExactD.-GxL')]=
+  c(Errors.means[1,1],Errors.means[2,1],Errors.means[1,3],Errors.means[2,3])
+
+cat('\\clearpage')
+
+cat(paste('\\subsection*{','Mean counts of (not)rejected hypothesis in the GxL-t-tests from Multi lab data. Considering Exact equality between parameters',"}\n",sep=""))
+print(xtable(mixed.calls/Rounds),tabular.environment="longtable",floating=FALSE)
+
+cat(paste('\\subsection*{','Mean counts of (not)rejected hypothesis in the Standard-t-tests from New single lab data. Considering Exact equality between parameters',"}\n",sep=""))
+print(xtable(NewSingle.Ecalls/Rounds),tabular.environment="longtable",floating=FALSE)
+cat('\\clearpage')
+}
+
+cat(paste("\\section*{Key to the column names in the following tables}\n",sep=""))
+
+cat(paste("\\paragraph*{MMS : Multi lab data standard analysisi-H0 is true according to RLM calls = Multi-MixedD.-Standard}\n",sep=""))
+cat(paste("\\paragraph*{MMG : Multi lab data GxL analysisi-H0 is true according to RLM calls = Multi-MixedD.-GxL}\n",sep=""))
+cat(paste("\\paragraph*{MES : Multi lab data standard analysisi-H0 is true if the simulation parameters are exactly equal = Multi-ExactD.-Standard}\n",sep=""))
+cat(paste("\\paragraph*{MEG : Multi lab data GxL analysisi- H0 is true if the simulation parameters are exactly equal  = Multi-ExactD.-GxL}\n",sep=""))
+
+cat(paste("\\paragraph*{SMS : Single lab data standard analysisi-H0 is true according to RLM calls = NewSingle-MixedD.-Standard}\n",sep=""))
+cat(paste("\\paragraph*{SMG : Single lab data GxL analysisi-H0 is true according to RLM calls = NewSingle-MixedD.-GxL}\n",sep=""))
+cat(paste("\\paragraph*{SES : Single lab data standard analysisi- H0 is true if the simulation parameters are exactly equal = NewSingle-ExactD.-Standard}\n",sep=""))
+cat(paste("\\paragraph*{SEG : Single lab data GxL analysisi- H0 is true if the simulation parameters are exactly equal = NewSingle-ExactD.-GxL}\n",sep=""))
+
+colnames(all.numbers.typeI)=colnames(all.numbers.Var)=colnames(all.numbers.Sd)=c('A','B','MMS','MMG','MES','MEG',
+                              'SMS','SMG','SES','SEG')
+cat('\\clearpage')
+cat(paste("\\section*{Mean Type I errors }\n",sep=""))
+print(xtable(all.numbers.typeI),tabular.environment="longtable",floating=FALSE)
+
+cat('\\clearpage')
+cat(paste("\\section*{Variance Of type I errors }\n",sep=""))
+print(xtable(all.numbers.Var[,1:6],digits=4),tabular.environment="longtable",floating=FALSE)
+print(xtable(all.numbers.Var[,c(1,2,7:10)],digits=4),tabular.environment="longtable",floating=FALSE)
+
+cat('\\clearpage')
+cat(paste("\\section*{Se Of type I errors }\n",sep=""))
+all.numbers.Se=all.numbers.Sd
+all.numbers.Se[,3:10]=(all.numbers.Se[,3:10]/sqrt(Rounds))
+print(xtable(all.numbers.Se[,1:6],digits=4),tabular.environment="longtable",floating=FALSE)
+print(xtable(all.numbers.Se[,c(1,2,7:10)],digits=4),tabular.environment="longtable",floating=FALSE)
+
+@
+
+
+\end{document}
+

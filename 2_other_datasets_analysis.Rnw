@@ -1,0 +1,537 @@
+\documentclass{article}
+
+\addtolength{\oddsidemargin}{-.5in}
+\addtolength{\evensidemargin}{-.5in}
+\addtolength{\textwidth}{1in}
+
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp}
+\usepackage{underscore}
+\usepackage{longtable}
+
+\title{Test for any data set}
+\author{Tal Sarig , Iman Jaljule}
+\begin{document}
+%\SweaveOpts{concordance=TRUE}
+
+\maketitle
+
+%%%%%%%%%%%%%%   Warning   %%%%%%%%%%%%%%
+% In order to able to run the code and receive the analysis report, The user needs
+% to follow the steps in the directions.txt file attached.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+%                     R Code to run the analysis of the 6 data sets in  
+%        "Assessing the replicabilityof single-laboratory discoveries in phenotyping experiments " 
+%      Excluding the sets of IMPC data. For the analysis of IMPC data please use Run_Me_(IMPC_code).Rnw
+%
+% To run a data set, There are three stages as follows :
+%     1- Importing the data: The user is asked determine which data set they wish to run, 
+%        Uncomment the relevant lines at the first chunk. For instance - If the user wishes to
+%        run the Wahlstien Males data, one needs to uncomment the three lines following a comment
+%        that says "### Use for importing Wahlsein-Males data".
+%     2- Analysing the data : Running ANOVA, Different variations of t-tests, Printing out 
+%        the Five tables per Endpoint, And creating  plots, Counting Opposite significant 
+%        Endpoints, Performing Adaptive BH procedure on the resulting single lab P-values.
+%     3- Printing the results : At last the results tables shown in the last section of the 
+%        analysis are created and printed out. Also Power, AFDP, TypeI & TypeII error, Oppositete 
+%        signifcant proportions are calculated and printed.   
+
+<<Importing the data,echo=FALSE, results= 'hide', message = FALSE, warning=FALSE>>=
+
+library(rJava)
+library(XLConnect)
+library(xtable)
+library(nlme)
+library(multcomp)
+
+
+### Use for importing Wahlsein-Males data
+# wb <- loadWorkbook("datasets/Wahlsten1_table_Transformed_males.xlsx")
+# d <- readWorksheet(wb,sheet="sheet1",useCachedValues=T)
+# file.name='WahM';fileN=1
+
+### Use for importing Wahlsein-females data
+# wb <- loadWorkbook("datasets/Wahlsten1_table_Transformed_females.xlsx")
+# d <- readWorksheet(wb,sheet="sheet1",useCachedValues=T)
+# file.name='WahF';fileN=2
+
+### Use for importing Richter - Hetrogenized data
+# wb <- loadWorkbook("datasets/transformed_raw_data_HET.xlsx")
+# d <- readWorksheet(wb,sheet="sheet1",useCachedValues=T)
+# file.name='RicH';fileN=3
+
+### Use for importing Richter - Standrized data
+# wb <- loadWorkbook("datasets/transformed_raw_data_STAN.xlsx")
+# d <- readWorksheet(wb,sheet="sheet1",useCachedValues=T)
+# file.name='RicS';fileN=4
+
+### Use for importing Wolfer-Enriched data
+# wb <- loadWorkbook("datasets/RawData_Enriched.xlsx")
+# d <- readWorksheet(wb,sheet=1,useCachedValues=T)
+# file.name='WolfE';fileN=5
+
+## Use for importing Wolfer-Normal data
+#  wb <- loadWorkbook("datasets/RawData_Normal.xlsx")
+#  d <- readWorksheet(wb,sheet=1,useCachedValues=T)
+# file.name='WolfN';fileN=6
+
+###########################################
+
+## Process the data
+d1=d
+d1[,"strain"] <- as.factor(d1[,"strain"])
+d1[,"lab"] <- as.factor(d1[,"lab"])
+
+#Import the function used to perform the analysis.
+source("general_functions.R",echo = F)
+
+ SaveEstimates=t(data.frame(S_error=rep(NA,length(colnames(d1))-2),S_lab=NA,S_interaction=NA))
+ colnames(SaveEstimates)=colnames(d1)[-c(1:2)]
+
+source(wf,echo = F)
+@
+
+% Begin to analyze ! 
+
+<<analyze,echo=FALSE, comment=NA, results='asis',fig.width=8, fig.height=5>>=
+
+save.all=matrix(NA,nrow=0,ncol=8) #This matrix will be used to save the results of all of the Endpoints along.
+colnames(save.all) <- c('EP',"lab",'strain1','strain2',"p.FLM.multi","p.RLM.multi","p.FLM.single","p.RLM.single")
+O.S=O.S.R=O.S.F=S.F=S.R=EPC=rep(0,(dim(d1)[2]-2)) # Variables used to save the count of Opposite significant endpoints.
+
+alpha=0.05
+sig.intF=c() # Counter of the Significant GxL interaction.
+
+for (k in 3:dim(d1)[2]){
+  
+  ## define variable + descriptive ##
+  variable.name <- colnames(d1)[k] # Endpoint name.
+  cat(paste("\\section{",variable.name,"}\n",sep=""))
+  variable <- aggregate.data(variable.name,d1) # Create the data summery table (The first table) 
+  nas=is.na(d1[,k])
+  y <- d1[!nas,k]
+  
+  ## Begining the analysis ##
+  ## Multi-lab Fixed model using (currently ) outside function##
+  anova.str <- bulid.anova.table(d1[!nas,],y) # This is an object of type list, where the first component is the Fixed+Mixed model anova table (the second table found in the analysis) , the second component is the estimate of the interaction. 
+  sig.intF[k-2]=(anova.str[[1]]['strain:lab','p.FLM']<=alpha)
+  ## Multi-lab Random Lab Model##
+  pairwise.multi.comparisons.tbl <- pairwise.multi.comparisons.function(d1[!nas,],y,variable) # Table of genotype pairwise common t-tests (regadlees of the lab), For both Fixed effect model and Random lab model (The Third table found in the analysis.)
+
+  ## Single-lab Fixed and Mixed analysis
+  ## Imitating the situation of a single researcher in a single lab situation: 
+  within.lab.tbl <- tryCatch( within.lab.function(d1[!nas,],y,anova.str),error=function(e) e) # Table of genotype pairwise t-tests. regular t-test and GXL adjusted test for each pair in a lab solely.
+  if(inherits(within.lab.tbl, "error")) next
+  ## counting Opposite significants - The count sums up for each measure ##
+  ## Only total calculations are made at the printing part.
+  com.t=combn(x = unique((d1[!nas,])$strain),m = 2);
+  for (cops in 1:dim(com.t)[2]){
+    # Choose the lines with tests for the specific pair of strains:
+    choose.lines=((within.lab.tbl$strain1%in%com.t[,cops])&(within.lab.tbl$strain2%in%com.t[,cops]))
+    # Choose the lines with signifint pair difference according to FLM:
+    choose.lines2=((within.lab.tbl[,"p.FLM"]<=alpha) & choose.lines)
+    # For convenience, we generate a similar table with similar pairings in diffrent labs as within.lab.tbl 
+    # only with P-values of the common t-tests, And then we sign the pairs significantly different according 
+    # to multi lab FLM:
+    Ptbl=merge(pairwise.multi.comparisons.tbl,within.lab.tbl[,c('strain1','strain2')],by=intersect(c("strain1","strain2"),c("strain1","strain2"))) 
+    choose.lines3=((Ptbl[,"p.FLM"]<=alpha) & (Ptbl$strain1%in%com.t[,cops])&(Ptbl$strain2%in%com.t[,cops]))
+    # Are there any significant couples at diffirent labs with opposite significance direction ?
+    cond1=((sum(within.lab.tbl[choose.lines2,'diff']>0)>0)&(sum(within.lab.tbl[choose.lines2,'diff']<0)>0))
+    O.S[k-2]=O.S[k-2]+cond1
+    EPC[k-2]=EPC[k-2]+1*(sum(choose.lines)>0)
+    # which of the opposite significants are Significant according to regular FLM and not to REGULAR RLM?
+    O.S.F[k-2]=O.S.F[k-2]+cond1*(sum((Ptbl[choose.lines3,'p.FLM']<=alpha) &(Ptbl[choose.lines3,'p.RLM']>alpha))>0)
+    # which of the opposite significants are Significant according to REGULAR RLM ?
+    O.S.R[k-2]=O.S.R[k-2]+(sum(Ptbl[choose.lines3,'p.RLM']<=alpha)>0)*cond1
+    # How much are Significant according to regular FLM and not to REGULAR RLM ( regardless of direction ) 
+    S.F[k-2]=S.F[k-2]+(sum(choose.lines3)>0)*(sum((Ptbl[choose.lines3,'p.FLM']<=alpha) &(Ptbl[choose.lines3,'p.RLM']>alpha))>0)
+    # How much are Significant according to regular FLM and not to REGULAR RLM ( regardless of direction )
+    S.R[k-2]=S.R[k-2]+(sum(choose.lines)>0)*(sum(Ptbl[choose.lines3,'p.RLM']<=alpha)>0)
+  }
+  
+
+## plots ## 
+ 
+  interaction.plot((d1[!nas,])$strain, (d1[!nas,])$lab,d1[!nas,paste(variable.name)], fixed = TRUE,col=c(2:(length(unique((d1[!nas,])$lab))+1)),lty=1,ylab=paste("mean of",variable.name,sep=" "),trace.label="lab",pch=c(16,16,16),type="b",las=2) #blabla
+ 
+  # printing summary of the data 
+  print(xtable(variable,digits=3),tabular.environment="longtable",floating=FALSE)
+  cat(paste("S2.GxL=",round(as.numeric(VarCorr(fit.lme)[4,1]),5)))
+  cat(paste('\n', "S2.GxL/S2.error=",round(as.numeric(VarCorr(fit.lme)[4,1])/as.numeric(VarCorr(fit.lme)[5,1]),8)))
+  
+SaveEstimates["S_error",variable.name]=round(as.numeric(VarCorr(fit.lme)[5,2]),5) #saves SD NOT variance
+SaveEstimates["S_lab",variable.name]=round(as.numeric(VarCorr(fit.lme)[2,2]),5)
+SaveEstimates["S_interaction",variable.name]=round(as.numeric(VarCorr(fit.lme)[4,2]),5)
+
+
+
+  
+  # print the various test results tables
+  print(xtable(anova.str[[1]],digits=c(0,0,3,3,3,3,3,3)),tabular.environment="longtable",floating=FALSE)
+  print(xtable(pairwise.multi.comparisons.tbl[,c("strain1","strain2","diff","p.FLM","Std.Error.RLM","p.RLM")],digits=c(0,0,0,3,3,3,3)),tabular.environment="longtable",floating=FALSE)
+  summary.tbl <- data.frame(matrix(ncol=9,nrow=length(within.lab.tbl$lab)))
+  colnames(summary.tbl) <- c("lab","strain1","strain2","diff","s2pooled","df.FLM","p.FLM","df.RLM","p.RLM")
+  summary.tbl[,c("lab","strain1","strain2","diff","s2pooled","df.FLM","p.FLM","df.RLM","p.RLM")] <-
+  within.lab.tbl[,c("lab","strain1","strain2","diff","s2pooled","df.FLM","p.FLM","df.RLM","p.RLM")] 
+  print(xtable(summary.tbl,digits=c(0,0,0,0,3,3,0,3,3,3)),tabular.environment="longtable",floating=FALSE)
+
+  
+  
+
+  ## compute power + FDP ##
+ 
+  # Generate a table holding the pvalues for each pair - Both sinle lab and multi lab t-tests for both models.
+  comb.tbl <- merge(pairwise.multi.comparisons.tbl[,c("strain1","strain2","p.FLM","p.RLM")],within.lab.tbl[,c("strain1","strain2",'diff',"lab","p.FLM","p.RLM")],by=intersect(c("strain1","strain2"),c("strain1","strain2")))
+
+  colnames(comb.tbl) <- c("strain1","strain2","p.FLM.multi","p.RLM.multi",'diff',"lab","p.FLM.single","p.RLM.single")
+  
+  comb.tbl=comb.tbl[,c("lab","strain1","strain2",'diff',"p.FLM.multi","p.RLM.multi","p.FLM.single","p.RLM.single")] 
+  comb.tbl=data.frame(EP=rep(variable.name,dim(comb.tbl)[1]),comb.tbl)
+
+save.all=rbind(save.all,comb.tbl) # Save the most recent results to the big table.
+
+cat("\\clearpage")
+
+}
+endpoints=(k-2)
+
+# Generating the results tables values, And Computing AFDP (Average estimates of False Discovery Rate )
+# i.e. - Computing the values showing in the "Single lab analysis - Power an FDP " section , at the end.
+V.fixed=v.fixed=S.fixed=s.fixed=U.fixed=u.fixed=T.fixed=t.fixed=R.mixed=r.mixed=nonR.mixed=non.mixed=V.mixed=v.mixed=S.mixed=s.mixed=U.mixed=u.mixed=T.mixed=t.mixed=m=M=M0=m0=M1=m1=R.fixed=r.fixed=nonR.fixed=nonr.fixed=M1.fixed=m1.fixed=R.mixed=r.mixed=nonR.mixed=nonr.mixed=M1.mixed=m1.mixed=c()
+lab <- unique(d1[!nas,'lab'])
+l=1
+# Next we count the components of each of the 9 cells of both results to appear in the supplementary tables, 
+# For every Pair of genotypes in lab solely, over all of the endpoints they've been tested in.
+for (la in 1:length(lab)){
+  co.t=combn(x =unique(c((save.all[save.all$lab==lab[la],])$strain1,(save.all[save.all$lab==lab[la],])$strain2)),m = 2)
+  for (k in 1:dim(co.t)[2]){
+    ka=(save.all$lab==lab[la])&(save.all$strain1%in%co.t[,k])&(save.all$strain2%in%co.t[,k])
+  m[l]=M[l]=sum(ka) #total number of genotypes
+M0[l]=m0[l]=sum(save.all[ka,"p.RLM.multi"]>alpha)# Number of true null hypothesis
+M1[l]=m1[l]=M[l]-M0[l] # Number of alternative null hypothesis
+M1.fixed[l]=m1.fixed[l]=sum(save.all[ka,"p.FLM.multi"]<=alpha)
+R.fixed[l]=sum(save.all[ka,"p.FLM.single"]<=alpha)
+nonR.fixed[l]=M[l]-R.fixed[l]
+V.fixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.FLM.single"]<=alpha))
+S.fixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.FLM.single"]<=alpha))
+U.fixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.FLM.single"]>alpha))
+T.fixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.FLM.single"]>alpha))
+
+R.mixed[l]=sum(save.all[ka,"p.RLM.single"]<=alpha)
+nonR.mixed[l]=M[l]-R.mixed[l]
+V.mixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.RLM.single"]<=alpha))
+S.mixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.RLM.single"]<=alpha))
+U.mixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.RLM.single"]>alpha))
+T.mixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.RLM.single"]>alpha)) 
+l=l+1
+  }
+}
+
+
+## At this point , We We have All of our computations and saved to the "save.all" table.
+## in addition, we have the computations of the components of the "Single lab analysis - Power an FDP " section , at the end. 
+
+## Now we perform FDR adjustment on our results, Follows that Recomputations of Summary tables, AFDP and Opposite significants; 
+## Which will show in "Single lab analysis  Using BH- Power an FDP" section .
+
+com.t=combn(x = unique(c(save.all$strain1,save.all$strain2)),m = 2);
+for ( LAB in unique(save.all$lab)){
+  # Performing BH on Pvalues within each lab separately & gene pair.
+  for (z in 1:dim(com.t)[2]){
+   mi=((save.all$lab==LAB)&(save.all$strain1%in%com.t[,z])&(save.all$strain2%in%com.t[,z]))
+   save.all[mi,"p.RLM.single"]=p.adjust(save.all[mi,"p.RLM.single"],method = 'BH',n = sum(mi))
+   r11=sum(save.all[mi,"p.RLM.single"]<=0.05/1.05)
+   if (r11>0){
+     save.all[mi,"p.RLM.single"]=save.all[mi,"p.RLM.single"]*(sum(mi)-r11)/(0.95*sum(mi))
+   }
+   save.all[mi,"p.FLM.single"]=p.adjust(save.all[mi,"p.FLM.single"],method = 'BH',n = sum(mi))
+   r12=sum(save.all[mi,"p.FLM.single"]<=0.05/1.05)
+   if (r12>0){
+     save.all[mi,"p.FLM.single"]=save.all[mi,"p.FLM.single"]*(sum(mi)-r12)/(0.95*sum(mi))
+   }
+  }
+}
+
+
+## Generating the summary tables values, And Computing AFDP (Average estimates of False Discovery Rate , As was done and explained earlier.)
+l=1
+for (la in 1:length(lab)){ 
+  co.t=combn(x =unique(c((save.all[save.all$lab==lab[la],])$strain1,(save.all[save.all$lab==lab[la],])$strain2)),m = 2)
+  for (k in 1:dim(co.t)[2]){
+    ka=(save.all$lab==lab[la])&(save.all$strain1%in%co.t[,k])&(save.all$strain2%in%co.t[,k])
+r.fixed[l]=sum(save.all[ka,"p.FLM.single"]<=alpha)
+nonr.fixed[l]=m[l]-r.fixed[l]
+v.fixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.FLM.single"]<=alpha))
+s.fixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.FLM.single"]<=alpha))
+u.fixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.FLM.single"]>alpha))
+t.fixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.FLM.single"]>alpha))
+
+r.mixed[l]=sum(save.all[ka,"p.RLM.single"]<=alpha)
+nonr.mixed[l]=m[l]-r.mixed[l]
+v.mixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.RLM.single"]<=alpha))
+s.mixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.RLM.single"]<=alpha))
+u.mixed[l]=sum((save.all[ka,"p.RLM.multi"]>alpha)&(save.all[ka,"p.RLM.single"]>alpha))
+t.mixed[l]=sum((save.all[ka,"p.RLM.multi"]<=alpha)&(save.all[ka,"p.RLM.single"]>alpha)) 
+l=l+1
+  }
+}
+
+
+
+## Computing opposite significants after FDR adjustment
+## for explanation - see the similar count earlier.
+o.s=s.f=s.r=o.s.r=o.s.f=rep(0,(dim(d1)[2]-2))
+EPs=colnames(d1)[3:dim(d1)[2]]
+for ( k in 3:dim(d1)[2]){
+  tem.all=save.all[save.all$EP==EPs[k-2],-1]
+      com.t=combn(x = unique(c(tem.all$strain1,tem.all$strain2)),m = 2);
+for (cops in 1:dim(com.t)[2]){
+  choose.lines=((tem.all$strain1%in%com.t[,cops])&(tem.all$strain2%in%com.t[,cops]))
+  choose.lines2=((tem.all[,"p.FLM.single"]<=alpha) & choose.lines)
+  cond1=((sum(tem.all[choose.lines2,'diff']>0)>0)&(sum(tem.all[choose.lines2,'diff']<0)>0))
+  choose.lines3=((tem.all[,"p.FLM.multi"]<=alpha) & (tem.all$strain1%in%com.t[,cops])&(tem.all$strain2%in%com.t[,cops]))
+  o.s[k-2]=o.s[k-2]+cond1
+  o.s.f[k-2]=o.s.f[k-2] + cond1*(sum(Ptbl[choose.lines3,"p.RLM.multi"]>alpha)>0) 
+  o.s.r[k-2]=o.s.r[k-2] + (sum(tem.all[choose.lines3,'p.RLM.multi']<=alpha)>0)*(cond1)
+  s.f[k-2]=s.f[k-2]+(sum(choose.lines3)>0)*(sum((tem.all[choose.lines3,'p.FLM.multi']<=alpha) &(tem.all[choose.lines3,'p.RLM.multi']>alpha))>0)
+s.r[k-2]=s.r[k-2]+(sum(choose.lines)>0)*(sum(tem.all[choose.lines3,'p.RLM.multi']<=alpha)>0)
+}
+}
+
+
+@
+
+% The following lines print the last two section (Power & FDP)
+
+<< Printing The Data set name, results='asis',echo=F>>=
+
+# This chunck prints A title of the name of the data set at the beggining of the results section.
+
+if(file.name=='WahM'){
+  cat(paste("\\section*{",'Analysis results for Wahlsten et al 2003 (Males)',"}\n",sep=""))
+}
+if(file.name=='WahF'){
+  cat(paste("\\section*{",'Analysis results for Wahlsten et al 2003 (Females)',"}\n",sep=""))
+}
+if(file.name=='RicH'){
+  cat(paste("\\section*{",'Analysis results for Richter et al 2011 (Heterogenized)',"}\n",sep=""))
+}
+if(file.name=='RicS'){
+  cat(paste("\\section*{",'Analysis results for Richter et al 2011 (Standardized)',"}\n",sep=""))
+}
+if(file.name=='WolfE'){
+  cat(paste("\\section*{",'Analysis results for Wolfer et al 2004 (Enriched)',"}\n",sep=""))
+}
+if(file.name=='WolfN'){
+  cat(paste("\\section*{",'Analysis results for Wolfer et al 2004 (Normal)',"}\n",sep=""))
+}
+
+@
+
+\section*{Single lab analysis - power and FDP}
+<<echo=FALSE, comment=NA, results='markup'>>=
+lab <- unique(d1$lab)
+cat(paste("Number of measures:",endpoints,'endpoints measured for',length(unique(d1$strain)),'genotypes in',length(unique(d1$lab)),'labs',"\n"))
+cat(paste("Number of significant measures according to RLM:",sum(M1)/length(lab),"\n"))
+cat(paste("Number of significant measures according to FLM:",sum(M1.fixed)/length(lab),"\n"))
+cat(paste('Significant GxL variance according to Fixed model:',round(mean(sig.intF)*100,3),'%','\n'))
+@
+
+\subsection*{Standard analysis}
+
+<< Generate the Standard analysis results table,echo=FALSE, comment=NA, results='asis'>>=
+
+## We fill the counts done earlier in a comprendable table.
+
+tbl.fixed <- matrix(ncol=3,nrow=3)
+colnames(tbl.fixed) <- c("No Difference between genotypes","Difference between genotypes","Total")
+rownames(tbl.fixed) <- c("Declared significant","Declared non-significant","Total")
+
+tbl.fixed["Declared significant","No Difference between genotypes"] <- sum(V.fixed)
+tbl.fixed["Declared non-significant","No Difference between genotypes"] <- sum(U.fixed)
+tbl.fixed["Declared significant","Difference between genotypes"] <- sum(S.fixed)
+tbl.fixed["Declared non-significant","Difference between genotypes"] <- sum(T.fixed)
+tbl.fixed["Declared significant","Total"] <- sum(R.fixed)
+tbl.fixed["Declared non-significant","Total"] <- sum(nonR.fixed)
+tbl.fixed["Total","No Difference between genotypes"] <- sum(M0)
+tbl.fixed["Total","Difference between genotypes"] <- sum(M1)
+tbl.fixed["Total","Total"] <- sum(M)
+
+
+print(xtable(tbl.fixed,digits=0,align=rep("c",4)))
+
+## For the sake of the computation of FDP for every pair of strains in a lab, One must consider the possibility 
+## to have R=0, In which case R might return Inf or NaN, When theoretically V/R must be defined as Zero.
+## For that reason, For every such case, We replace (R=1 , V=0) 
+V.fixed[which(R.fixed==0)]=rep(0,length(which(R.fixed==0)))
+R.fixed[which(R.fixed==0)]=rep(1,length(which(R.fixed==0)))
+
+@
+
+<<echo=FALSE, comment=NA, results='markup'>>=
+cat(paste("Power - standard t-test:" ,tbl.fixed["Declared significant","Difference between genotypes"],'/',tbl.fixed["Total","Difference between genotypes"],'=',round(tbl.fixed["Declared significant","Difference between genotypes"]/tbl.fixed["Total","Difference between genotypes"],4),"\n"))
+cat(paste("FDP - standard t-test:" ,round(mean(V.fixed/R.fixed),4),"\n"))
+cat(paste("Type I error :" ,tbl.fixed["Declared significant","No Difference between genotypes"],'/',tbl.fixed["Total","No Difference between genotypes"],'=',round(tbl.fixed["Declared significant","No Difference between genotypes"]/tbl.fixed["Total","No Difference between genotypes"],4),"\n"))
+cat(paste("Type II error :" ,tbl.fixed["Declared non-significant","Difference between genotypes"],'/',tbl.fixed["Total","Difference between genotypes"],'=',round(tbl.fixed["Declared non-significant","Difference between genotypes"]/tbl.fixed["Total","Difference between genotypes"],4),"\n"))
+
+@
+
+\subsection*{G$\times$L - adjusted analysis}
+
+<<Generate the GxL adjusted analysis results table,echo=FALSE, comment=NA, results='asis'>>=
+
+## We fill the counts done earlier in a comprendable table.
+
+tbl.mixed <- matrix(ncol=3,nrow=3)
+colnames(tbl.mixed) <- c("No Difference between genotypes","Difference between genotypes","Total")
+rownames(tbl.mixed) <- c("Declared significant","Declared non-significant","Total")
+
+tbl.mixed["Declared significant","No Difference between genotypes"] <- sum(V.mixed)
+tbl.mixed["Declared non-significant","No Difference between genotypes"] <- sum(U.mixed)
+tbl.mixed["Declared significant","Difference between genotypes"] <- sum(S.mixed)
+tbl.mixed["Declared non-significant","Difference between genotypes"] <- sum(T.mixed)
+tbl.mixed["Declared significant","Total"] <- sum(R.mixed)
+tbl.mixed["Declared non-significant","Total"] <- sum(nonR.mixed)
+tbl.mixed["Total","No Difference between genotypes"] <- sum(M0)
+tbl.mixed["Total","Difference between genotypes"] <- sum(M1)
+tbl.mixed["Total","Total"] <- sum(M)
+
+print(xtable(tbl.mixed,digits=0,align=rep("c",4)))
+
+## For the sake of the computation of FDP for every pair of strains in a lab, One must consider the possibility ## to have R=0, In which case R might return Inf or NaN, When theoretically V/R must be defined as Zero.
+## For that reason, For every such case, We replace (R=1 , V=0)
+V.mixed[which(R.mixed==0)]=rep(0,length(which(R.mixed==0)))
+R.mixed[which(R.mixed==0)]=rep(1,length(which(R.mixed==0)))
+
+@
+
+<<echo=FALSE, comment=NA, results='markup'>>=
+cat(paste("Power - GxL adjusted:" ,tbl.mixed["Declared significant","Difference between genotypes"],
+          '/',tbl.mixed["Total","Difference between genotypes"],'=',
+          round(tbl.mixed["Declared significant","Difference between genotypes"]/tbl.mixed["Total","Difference between genotypes"],4),"\n"))
+cat(paste("FDP - GxL adjusted:" ,round(mean(V.mixed/R.mixed),4),"\n"))
+cat(paste("Type I error :" ,tbl.mixed["Declared significant","No Difference between genotypes"],'/',tbl.mixed["Total","No Difference between genotypes"],'=',round(tbl.mixed["Declared significant","No Difference between genotypes"]/tbl.mixed["Total","No Difference between genotypes"],4),"\n"))
+cat(paste("Type II error :" ,tbl.mixed["Declared non-significant","Difference between genotypes"],'/',tbl.mixed["Total","Difference between genotypes"],'=',round(tbl.mixed["Declared non-significant","Difference between genotypes"]/tbl.mixed["Total","Difference between genotypes"],4),"\n"))
+
+
+@
+
+
+<<Calculating Opposite significants,results='markup',comment=NA,echo=F>>=
+cat(paste('Opposite significants Proportion : ',sum(O.S),'/',sum(EPC),'=',round(sum(O.S)/sum(EPC),4),'\n'))
+cat(paste('Proportion of "opposite significant" out of measures in which genotype','\n','effect is significant according to FLM but not RLM :  ',sum(O.S.F),'/',sum(S.F),'=',round(sum(O.S.F)/sum(S.F),4),'\n'))
+cat(paste('Proportion of "opposite significant" out of measures in which genotype','\n','effect is significant according to RLM:',sum(O.S.R),'/',sum(S.R),'=',round(sum(O.S.R)/sum(S.R),4),'\n'))
+@
+
+\clearpage
+
+\section*{Single lab analysis using BH - power and FDP}
+
+\subsection*{Standard analysis}
+
+<<echo=FALSE, comment=NA, results='asis'>>=
+
+## We fill the counts done earlier in a comprendable table.
+
+tbl.fixed <- matrix(ncol=3,nrow=3)
+colnames(tbl.fixed) <- c("No Difference between genotypes","Difference between genotypes","Total")
+rownames(tbl.fixed) <- c("Declared significant","Declared non-significant","Total")
+
+tbl.fixed["Declared significant","No Difference between genotypes"] <- sum(v.fixed)
+tbl.fixed["Declared non-significant","No Difference between genotypes"] <- sum(u.fixed)
+tbl.fixed["Declared significant","Difference between genotypes"] <- sum(s.fixed)
+tbl.fixed["Declared non-significant","Difference between genotypes"] <- sum(t.fixed)
+tbl.fixed["Declared significant","Total"] <- sum(r.fixed)
+tbl.fixed["Declared non-significant","Total"] <- sum(nonr.fixed)
+tbl.fixed["Total","No Difference between genotypes"] <- sum(m0)
+tbl.fixed["Total","Difference between genotypes"] <- sum(m1)
+tbl.fixed["Total","Total"] <- sum(m)
+
+
+print(xtable(tbl.fixed,digits=0,align=rep("c",4)))
+
+v.fixed[which(r.fixed==0)]=rep(0,length(which(r.fixed==0)))
+r.fixed[which(r.fixed==0)]=rep(1,length(which(r.fixed==0)))
+
+@
+
+<<echo=FALSE, comment=NA, results='markup'>>=
+cat(paste("Power - standard t-test:" ,tbl.fixed["Declared significant","Difference between genotypes"],'/',tbl.fixed["Total","Difference between genotypes"],'=',round(tbl.fixed["Declared significant","Difference between genotypes"]/tbl.fixed["Total","Difference between genotypes"],4),"\n"))
+cat(paste("FDP - standard t-test:" ,round(mean(v.fixed/r.fixed),4),"\n"))
+cat(paste("Type I error :" ,tbl.fixed["Declared significant","No Difference between genotypes"],'/',tbl.fixed["Total","No Difference between genotypes"],'=',round(tbl.fixed["Declared significant","No Difference between genotypes"]/tbl.fixed["Total","No Difference between genotypes"],4),"\n"))
+cat(paste("Type II error :" ,tbl.fixed["Declared non-significant","Difference between genotypes"],'/',tbl.fixed["Total","Difference between genotypes"],'=',round(tbl.fixed["Declared non-significant","Difference between genotypes"]/tbl.fixed["Total","Difference between genotypes"],4),"\n"))
+
+@
+\subsection*{G$\times$L - adjusted analysis}
+<<echo=FALSE, comment=NA, results='asis'>>=
+
+## We fill the counts done earlier in a comprendable table.
+
+tbl.mixed <- matrix(ncol=3,nrow=3)
+colnames(tbl.mixed) <- c("No Difference between genotypes","Difference between genotypes","Total")
+rownames(tbl.mixed) <- c("Declared significant","Declared non-significant","Total")
+
+tbl.mixed["Declared significant","No Difference between genotypes"] <- sum(v.mixed)
+tbl.mixed["Declared non-significant","No Difference between genotypes"] <- sum(u.mixed)
+tbl.mixed["Declared significant","Difference between genotypes"] <- sum(s.mixed)
+tbl.mixed["Declared non-significant","Difference between genotypes"] <- sum(t.mixed)
+tbl.mixed["Declared significant","Total"] <- sum(r.mixed)
+tbl.mixed["Declared non-significant","Total"] <- sum(nonr.mixed)
+tbl.mixed["Total","No Difference between genotypes"] <- sum(m0)
+tbl.mixed["Total","Difference between genotypes"] <- sum(m1)
+tbl.mixed["Total","Total"] <- sum(m)
+
+print(xtable(tbl.mixed,digits=0,align=rep("c",4)))
+
+v.mixed[which(r.mixed==0)]=rep(0,length(which(r.mixed==0)))
+r.mixed[which(r.mixed==0)]=rep(1,length(which(r.mixed==0)))
+
+@
+
+<<echo=FALSE, comment=NA, results='markup'>>=
+cat(paste("Power - GxL adjusted:" ,tbl.mixed["Declared significant","Difference between genotypes"],'/',tbl.mixed["Total","Difference between genotypes"],'=',round(tbl.mixed["Declared significant","Difference between genotypes"]/tbl.mixed["Total","Difference between genotypes"],4),"\n"))
+cat(paste("FDP - GxL adjusted:" ,round(mean(v.mixed/r.mixed),4),"\n"))
+cat(paste("Type I error :" ,tbl.mixed["Declared significant","No Difference between genotypes"],'/',tbl.mixed["Total","No Difference between genotypes"],'=',round(tbl.mixed["Declared significant","No Difference between genotypes"]/tbl.mixed["Total","No Difference between genotypes"],4),"\n"))
+cat(paste("Type II error :" ,tbl.mixed["Declared non-significant","Difference between genotypes"],'/',tbl.mixed["Total","Difference between genotypes"],'=',round(tbl.mixed["Declared non-significant","Difference between genotypes"]/tbl.mixed["Total","Difference between genotypes"],4),"\n"))
+
+@
+
+<<Printing Opposite significants with BH,results='markup',comment=NA,echo=F>>=
+cat(paste('Opposite significants Proportion : ',sum(o.s),'/',sum(EPC),'=',round(sum(o.s)/sum(EPC),4),'\n'))
+cat(paste('Proportion of "opposite significant" out of measures in which genotype','\n','effect is significant according to FLM but not RLM :  ',sum(o.s.f),'/',sum(s.f),'=',round(sum(o.s.f)/sum(s.f),4),'\n'))
+cat(paste('Proportion of "opposite significant" out of measures in which genotype','\n','effect is significant according to RLM:',sum(o.s.r),'/',sum(s.r),'=',round(sum(o.s.r)/sum(s.r),4),'\n'))
+@
+
+<<saving AFDPs_TypeI error and power,echo=F,results='asis'>>=
+
+## Here we Save the values of AFDPs, TypeI error and Power to an external Excel file,
+## In a sheet numbered as was defined earlier ( along with reading the data).
+
+fdps=cbind(V.fixed,R.fixed,V.mixed,R.mixed,v.fixed,r.fixed,v.mixed,r.mixed)
+colnames(fdps)=c('V.F','R.F','V.M','R.M','V.F.BH','R.F.BH','V.M.BH','R.M.BH')
+
+TypeI=t(matrix(c(sum(V.fixed)/sum(M0),sum(V.mixed)/sum(M0),sum(v.fixed)/sum(m0),sum(v.mixed)/sum(m0)))) 
+Power=t(matrix(c(sum(S.fixed)/sum(M1),sum(S.mixed)/sum(M1),sum(s.fixed)/sum(m1),sum(s.mixed)/sum(m1))))
+colnames(TypeI)=colnames(Power)=c('FLM','RLM','FLM.BH','RLM.BH')
+
+## Saving the tables for across data sets analysis in Excel form. 
+fd <- loadWorkbook("fdps.xlsx", create = FALSE)
+writeWorksheet(fd, fdps, sheet = fileN)
+saveWorkbook(fd)
+typeI <-loadWorkbook("TypeIerror.xlsx", create = FALSE)
+writeWorksheet(typeI, TypeI, sheet = fileN)
+saveWorkbook(typeI)
+power <-loadWorkbook("Power.xlsx", create = FALSE)
+writeWorksheet(power, Power, sheet = fileN)
+saveWorkbook(power)
+
+cat("\\clearpage")
+cat(paste("\\part*{ Estimates Of standard deviations for each endpoint }\n",sep=""))
+print(xtable(t(SaveEstimates),digits=3),tabular.environment="longtable",floating=FALSE)
+@
+
+\end{document}
