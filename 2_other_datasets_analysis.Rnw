@@ -75,8 +75,8 @@ library(multcomp)
 # file.name='WolfE';fileN=5
 
 ## Use for importing Wolfer-Normal data
-#  wb <- loadWorkbook("datasets/RawData_Normal.xlsx")
-#  d <- readWorksheet(wb,sheet=1,useCachedValues=T)
+# wb <- loadWorkbook("datasets/RawData_Normal.xlsx")
+# d <- readWorksheet(wb,sheet=1,useCachedValues=T)
 # file.name='WolfN';fileN=6
 
 ###########################################
@@ -93,9 +93,10 @@ source("general_functions.R",echo = F)
  colnames(SaveEstimates)=colnames(d1)[-c(1:2)]
 
 source(wf,echo = F)
+ 
+estimates_for_app=data.frame(S2_interaction=rep(NA,length(colnames(d1))),S2_error=NA,S2_lab=NA,n_lab=NA,n_strain=NA)
+rownames(estimates_for_app)=colnames(d1)
 @
-
-% Begin to analyze ! 
 
 <<analyze,echo=FALSE, comment=NA, results='asis',fig.width=8, fig.height=5>>=
 
@@ -163,6 +164,12 @@ for (k in 3:dim(d1)[2]){
   cat(paste("S2.GxL=",round(as.numeric(VarCorr(fit.lme)[4,1]),5)))
   cat(paste('\n', "S2.GxL/S2.error=",round(as.numeric(VarCorr(fit.lme)[4,1])/as.numeric(VarCorr(fit.lme)[5,1]),8)))
   
+  estimates_for_app[variable.name,"S2_interaction"]=as.numeric(VarCorr(fit.lme)[4,1])
+  estimates_for_app[variable.name,"S2_error"]=as.numeric(VarCorr(fit.lme)[5,1])
+  estimates_for_app[variable.name,"S2_lab"]=as.numeric(VarCorr(fit.lme)[2,1])
+  estimates_for_app[variable.name,"n_lab"]=length(unique(variable$lab))
+  estimates_for_app[variable.name,"n_strain"]=length(unique(variable$strain))
+  
 SaveEstimates["S_error",variable.name]=round(as.numeric(VarCorr(fit.lme)[5,2]),5) #saves SD NOT variance
 SaveEstimates["S_lab",variable.name]=round(as.numeric(VarCorr(fit.lme)[2,2]),5)
 SaveEstimates["S_interaction",variable.name]=round(as.numeric(VarCorr(fit.lme)[4,2]),5)
@@ -195,8 +202,8 @@ SaveEstimates["S_interaction",variable.name]=round(as.numeric(VarCorr(fit.lme)[4
 save.all=rbind(save.all,comb.tbl) # Save the most recent results to the big table.
 
 cat("\\clearpage")
-
 }
+write.csv(estimates_for_app,file='IMPC_variancec_estimates_for_appSex1.csv',row.names=T)
 endpoints=(k-2)
 
 # Generating the results tables values, And Computing AFDP (Average estimates of False Discovery Rate )
